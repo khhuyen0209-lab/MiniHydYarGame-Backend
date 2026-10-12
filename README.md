@@ -72,7 +72,7 @@ minigame-hy-backend/
 
 ## 🔄 Quy ước API
 
-- **Base URL**: `https://your-domain.com/api/v1`
+- **Base URL**: `${APP_HOST}/api/v1` — mặc định `https://minihydyargame-backend.onrender.com/api/v1`. Đổi host chỉ cần set biến môi trường `APP_HOST` (không cần sửa code).
 - **Xác thực**: Header `Authorization: Bearer <idToken>`
   - Client lấy token từ Firebase Auth: `const idToken = await firebase.auth().currentUser.getIdToken()`
 - **Response thống nhất mọi API**:
@@ -182,14 +182,14 @@ minigame-hy-backend/
 const idToken = await firebase.auth().currentUser.getIdToken();
 
 // 1. Khởi tạo tài khoản sau khi đăng nhập
-await fetch('https://your-domain.com/api/v1/user/init', {
+await fetch('https://minihydyargame-backend.onrender.com/api/v1/user/init', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
   body: JSON.stringify({ displayName: 'Player One' })
 });
 
 // 2. Nhập mã mời
-const res = await fetch('https://your-domain.com/api/v1/invite/use-code', {
+const res = await fetch('https://minihydyargame-backend.onrender.com/api/v1/invite/use-code', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
   body: JSON.stringify({ code: 'ABC123' })
@@ -203,5 +203,6 @@ const { success, message, data, error } = await res.json();
 
 - **Google Cloud Run** / **Render** / **Railway** / **VPS** (bất kỳ nơi nào chạy Node ≥ 18).
 - Set các biến môi trường trong `.env.example` lên platform deploy.
-- Cập nhật `CORS_ORIGIN` thành domain frontend của bạn (vd `https://minigame-hy.web.app`).
+- **`APP_HOST`** = domain công khai của backend (vd `https://minihydyargame-backend.onrender.com`). Sau này đổi host chỉ cần sửa biến này, KHÔNG cần đụng code.
+- Cập nhật `CORS_ORIGIN` thành domain frontend của bạn (vd `https://minigame-hy.web.app`). Lưu ý: `CORS_ORIGIN` là domain FRONTEND, khác với `APP_HOST` (domain của backend).
 - **Quan trọng**: khi chuyển sang kiến trúc backend này, hãy khóa Firestore Rules về chỉ cho admin (từ chối client đọc/ghi trực tiếp) để đảm bảo đúng nguyên tắc "client không gọi Firestore".

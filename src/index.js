@@ -15,12 +15,12 @@ const morgan = require('morgan');
 
 const { attachResponseHelpers, ERROR_CODES } = require('./utils/helpers');
 const { apiLimiter } = require('./middleware/limiter');
+const { APP_HOST, API_PREFIX, API_BASE_URL } = require('./config/app');
 const userRoutes = require('./routes/user');
 const inviteRoutes = require('./routes/invite');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const API_PREFIX = '/api/v1';
 
 /* ---------------- Middleware toàn cục ---------------- */
 app.set('trust proxy', 1); // cần thiết cho rate-limit khi đứng sau proxy/Load Balancer
@@ -43,7 +43,12 @@ app.use(API_PREFIX, apiLimiter);
 
 /* ---------------- Health check ---------------- */
 app.get(`${API_PREFIX}/health`, (req, res) => {
-    return res.ok({ status: 'ok', uptime: process.uptime() }, 'Server đang chạy.');
+    return res.ok({
+        status: 'ok',
+        uptime: process.uptime(),
+        host: APP_HOST,
+        apiBaseUrl: API_BASE_URL
+    }, 'Server đang chạy.');
 });
 
 /* ---------------- Routes ---------------- */
@@ -94,8 +99,10 @@ app.use((err, req, res, next) => {
 
 /* ---------------- Khởi động ---------------- */
 const server = app.listen(PORT, () => {
-    console.log(`✅ MiniGame HY Backend đang chạy tại http://localhost:${PORT}`);
-    console.log(`✅ API prefix: ${API_PREFIX}`);
+    console.log(`✅ MiniGame HY Backend đang chạy.`);
+    console.log(`   Local : http://localhost:${PORT}`);
+    console.log(`   Public: ${APP_HOST}`);
+    console.log(`   API   : ${API_BASE_URL}`);
 });
 
 // Tắt mềm: đóng kết nối DB khi nhận tín hiệu shutdown.
