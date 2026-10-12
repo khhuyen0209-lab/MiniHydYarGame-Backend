@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Môi trường (CHƯA bao giờ commit file này)
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Runtime / OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Firebase service account (KHÔNG bao giờ commit)
+serviceAccountKey.json
+*-firebase-adminsdk-*.json
