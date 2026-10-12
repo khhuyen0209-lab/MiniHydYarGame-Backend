@@ -18,6 +18,7 @@ const { apiLimiter } = require('./middleware/limiter');
 const { APP_HOST, API_PREFIX, API_BASE_URL } = require('./config/app');
 const userRoutes = require('./routes/user');
 const inviteRoutes = require('./routes/invite');
+const feedbackRoutes = require('./routes/feedback');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -54,6 +55,7 @@ app.get(`${API_PREFIX}/health`, (req, res) => {
 /* ---------------- Routes ---------------- */
 app.use(`${API_PREFIX}/user`, userRoutes);
 app.use(`${API_PREFIX}/invite`, inviteRoutes);
+app.use(`${API_PREFIX}/feedback`, feedbackRoutes);
 
 /* ---------------- 404 ---------------- */
 app.use((req, res) => {
