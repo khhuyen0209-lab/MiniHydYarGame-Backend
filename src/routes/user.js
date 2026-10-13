@@ -47,6 +47,10 @@ router.post('/init', strictLimiter, async (req, res, next) => {
                 updates.role = 'admin';
                 updates.inviteBypass = true; // admin không bị xét duyệt / giới hạn mã mời
             }
+            // Đồng bộ ảnh đại diện Google (photoURL) làm avatar.
+            if (picture && data.avatar !== picture) {
+                updates.avatar = picture;
+            }
             await userRef.update(updates);
             const updated = (await userRef.get()).data();
             return res.ok({ user: sanitizeUser(updated), isNew: false }, 'Đã đồng bộ tài khoản.');
