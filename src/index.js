@@ -120,4 +120,31 @@ function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+/* Seed mã hệ thống mặc định HY_2306TL (idempotent — chỉ tạo nếu chưa có).
+   Mã này cho phép MỌI người dùng nhập, KHÔNG khóa việc nhập mã mời người khác. */
+async function seedSystemCodes() {
+    try {
+        const { db, Timestamp } = require('./config/firebase');
+        const ref = db.collection('system_codes').doc('HY_2306TL');
+        const snap = await ref.get();
+        if (!snap.exists) {
+            await ref.set({
+                code: 'HY_2306TL',
+                prefix: 'HY',
+                rewardCoins: Number(process.env.SEED_HY2306TL_COINS) || 500,
+                maxUses: 999999,
+                uses: 0,
+                active: true,
+                note: 'Mã hệ thống giới thiệu — mọi người đều nhập được, không khóa mã mời.',
+                createdAt: Timestamp.now(),
+                createdBy: 'seed'
+            });
+            console.log('✅ Đã seed mã hệ thống HY_2306TL (+500 coin, không khóa).');
+        }
+    } catch (err) {
+        console.warn('[Seed] Không seed được mã hệ thống:', err && err.message);
+    }
+}
+seedSystemCodes();
+
 module.exports = app;
