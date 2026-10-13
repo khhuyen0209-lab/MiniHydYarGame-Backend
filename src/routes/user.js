@@ -19,6 +19,7 @@ const {
     ERROR_CODES,
     CODE_PREFIX,
     generateUniqueInviteCode,
+    isAdminEmail,
     sanitizeUser,
     computeStats
 } = require('../utils/helpers');
@@ -36,8 +37,17 @@ router.post('/init', strictLimiter, async (req, res, next) => {
         const userRef = USERS().doc(uid);
         const snap = await userRef.get();
         const now = Timestamp.now();
+        const admin = isAdminEmail(email);
         if (snap.exists) {
-            await userRef.update({ lastLoginAt: now });
+            const data = snap.data();
+            // Idempotent: nâng cấp role admin nếu email thuộc whitelist mà role chưa phải admin.
+            // Role CHỈ server set ở đây — client không thể ghi đè (PATCH /profile whitelist không có role).
+            const updates = { lastLoginAt: now };
+            if (admin && data.role !== 'admin') {
+                updates.role = 'admin';
+                updates.inviteBypass = true; // admin không bị xét duyệt / giới hạn mã mời
+            }
+            await userRef.update(updates);
             const updated = (await userRef.get()).data();
             return res.ok({ user: sanitizeUser(updated), isNew: false }, 'Đã đồng bộ tài khoản.');
         }
@@ -50,6 +60,8 @@ router.post('/init', strictLimiter, async (req, res, next) => {
             displayName: String(displayName).slice(0, 40),
             avatar: picture || '',
             bio: '',
+            role: admin ? 'admin' : 'user',
+            inviteBypass: admin ? true : false,
             createdAt: now, lastLoginAt: now,
             inviteCode,
             invitedBy: null, inviteUsed: false,

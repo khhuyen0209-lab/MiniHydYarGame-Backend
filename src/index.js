@@ -19,6 +19,8 @@ const { APP_HOST, API_PREFIX, API_BASE_URL } = require('./config/app');
 const userRoutes = require('./routes/user');
 const inviteRoutes = require('./routes/invite');
 const feedbackRoutes = require('./routes/feedback');
+const adminRoutes = require('./routes/admin');
+const { router: rankingsRouter } = require('./routes/rankings');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -29,7 +31,7 @@ app.use(helmet());
 app.use(cors({
     origin: process.env.CORS_ORIGIN === '*' ? true : (process.env.CORS_ORIGIN || '*').split(','),
     methods: ['GET', 'POST', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret']
 }));
 app.use(express.json({ limit: '1mb' })); // chặn body quá lớn (avatar dataURL)
 if (process.env.NODE_ENV !== 'test') {
@@ -56,6 +58,8 @@ app.get(`${API_PREFIX}/health`, (req, res) => {
 app.use(`${API_PREFIX}/user`, userRoutes);
 app.use(`${API_PREFIX}/invite`, inviteRoutes);
 app.use(`${API_PREFIX}/feedback`, feedbackRoutes);
+app.use(`${API_PREFIX}/admin`, adminRoutes);
+app.use(API_PREFIX, rankingsRouter); // /rankings/* + /presence/*
 
 /* ---------------- 404 ---------------- */
 app.use((req, res) => {

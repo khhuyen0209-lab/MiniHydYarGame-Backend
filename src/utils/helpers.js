@@ -38,13 +38,42 @@ function attachResponseHelpers(req, res, next) {
     next();
 }
 
-/* ---------------- Mã mời ---------------- */
-// Prefix: HY = mã người dùng; PXE / GNTU = mã hệ thống (promo/admin).
+/* ---------------- Mã mời ----------------
+   Tiền tố nhận diện (theo yêu cầu):
+     AC   = mã mời người dùng (user) — thay thế HY cũ.
+     HY   = mã hệ thống (system).
+     PXE / GNTU = mã đặc biệt (special promo — vẫn là system_codes).
+     ADM  = mã mời quản trị viên (admin-created, vẫn trong system_codes).
+   Lưu ý: tương thích ngược — user cũ vẫn có mã HY... và vẫn dùng được.
+------------------------------------------------------ */
 const CODE_PREFIX = Object.freeze({
-    USER: 'HY',
+    USER: 'AC',
+    SYSTEM_HY: 'HY',
     SYSTEM_PXE: 'PXE',
-    SYSTEM_GNTU: 'GNTU'
+    SYSTEM_GNTU: 'GNTU',
+    ADMIN: 'ADM'
 });
+// Các prefix hợp lệ cho system_codes (dùng khi admin tạo mã).
+const SYSTEM_PREFIXES = [CODE_PREFIX.SYSTEM_HY, CODE_PREFIX.SYSTEM_PXE, CODE_PREFIX.SYSTEM_GNTU, CODE_PREFIX.ADMIN];
+/* ---------------- Admin (chống giả mạo) ----------------
+   Danh sách email được quyền admin. Lấy từ env ADMIN_EMAILS
+   (phân tách bằng dấu phẩy). Mặc định gồm tài khoản test của chủ dự án.
+   - Email được lấy TỪ Firebase token đã verify (không tin client).
+   - Đồng thời server kiểm tra users.doc(uid).role === 'admin' (role chỉ
+     server mới set được, client không ghi đè). Hai lớp này phải đồng thời
+     thỏa mãn → không thể giả mạo admin bằng cách sửa payload.
+------------------------------------------------------ */
+const DEFAULT_ADMIN_EMAILS = ['thanhlinh182007@gmail.com'];
+function getAdminEmails() {
+    const raw = String(process.env.ADMIN_EMAILS || '').trim().toLowerCase();
+    const fromEnv = raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    const set = new Set([...DEFAULT_ADMIN_EMAILS, ...fromEnv]);
+    return Array.from(set);
+}
+function isAdminEmail(email) {
+    if (!email) return false;
+    return getAdminEmails().includes(String(email).trim().toLowerCase());
+}
 // 6 ký tự ngẫu nhiên đằng sau mỗi mã.
 const CODE_RANDOM_LENGTH = 6;
 // Bảng chữ cái loại bỏ ký tự dễ nhầm: 0/O, 1/I/L.
@@ -64,16 +93,17 @@ function generateInviteCode(prefix = CODE_PREFIX.USER, length = CODE_RANDOM_LENG
 
 /**
  * Phân loại mã mời dựa trên prefix.
- * @returns {{type:'user'|'system', prefix:string}|null}
+ * @returns {{type:'user'|'system', prefix:string, subtype?:string}|null}
  */
 function classifyCode(code) {
     const c = String(code || '').trim().toUpperCase();
     if (new RegExp(`^${CODE_PREFIX.USER}[A-Z0-9]{${CODE_RANDOM_LENGTH},}$`).test(c)) {
         return { type: 'user', prefix: CODE_PREFIX.USER };
     }
-    if (new RegExp(`^(${CODE_PREFIX.SYSTEM_PXE}|${CODE_PREFIX.SYSTEM_GNTU})[A-Z0-9]{${CODE_RANDOM_LENGTH},}$`).test(c)) {
-        return { type: 'system', prefix: c.startsWith(CODE_PREFIX.SYSTEM_PXE) ? CODE_PREFIX.SYSTEM_PXE : CODE_PREFIX.SYSTEM_GNTU };
-    }
+    if (c.startsWith(CODE_PREFIX.SYSTEM_HY)) return { type: 'system', prefix: CODE_PREFIX.SYSTEM_HY, subtype: 'hệ thống' };
+    if (c.startsWith(CODE_PREFIX.SYSTEM_PXE)) return { type: 'system', prefix: CODE_PREFIX.SYSTEM_PXE, subtype: 'đặc biệt' };
+    if (c.startsWith(CODE_PREFIX.SYSTEM_GNTU)) return { type: 'system', prefix: CODE_PREFIX.SYSTEM_GNTU, subtype: 'đặc biệt' };
+    if (c.startsWith(CODE_PREFIX.ADMIN)) return { type: 'system', prefix: CODE_PREFIX.ADMIN, subtype: 'quản trị viên' };
     return null;
 }
 
@@ -121,14 +151,20 @@ const INVITE_MILESTONES = Object.freeze([
 function sanitizeUser(data) {
     if (!data) return null;
     const history = Array.isArray(data.rewardsHistory) ? data.rewardsHistory : [];
+    const role = data.role || 'user';
+    const email = data.email || '';
+    const isAdmin = role === 'admin' || isAdminEmail(email);
     return {
         uid: data.uid || null,
-        email: data.email || '',
+        email: email,
         displayName: data.displayName || 'Người dùng',
         avatar: data.avatar || '',
         bio: data.bio || '',
         createdAt: data.createdAt || null,
         lastLoginAt: data.lastLoginAt || null,
+        role: role,
+        isAdmin: isAdmin,
+        inviteBypass: !!data.inviteBypass || isAdmin,
         inviteCode: data.inviteCode || '',
         invitedBy: data.invitedBy || null,
         inviteUsed: !!data.inviteUsed,
@@ -166,10 +202,13 @@ module.exports = {
     ERROR_CODES,
     attachResponseHelpers,
     CODE_PREFIX,
+    SYSTEM_PREFIXES,
     CODE_RANDOM_LENGTH,
     generateInviteCode,
     generateUniqueInviteCode,
     classifyCode,
+    getAdminEmails,
+    isAdminEmail,
     REFERRAL_REWARDS,
     INVITE_MILESTONES,
     sanitizeUser,

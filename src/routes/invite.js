@@ -15,11 +15,12 @@
 'use strict';
 const express = require('express');
 const { db, FieldValue, Timestamp } = require('../config/firebase');
-const { verifyToken } = require('../middleware/auth');
+const { verifyToken, optionalAuth, requireAdmin } = require('../middleware/auth');
 const { strictLimiter } = require('../middleware/limiter');
 const {
     ERROR_CODES,
     CODE_PREFIX,
+    SYSTEM_PREFIXES,
     generateUniqueInviteCode,
     REFERRAL_REWARDS,
     INVITE_MILESTONES,
@@ -30,18 +31,7 @@ const router = express.Router();
 const USERS = () => db.collection('users');
 const SYSTEM_CODES = () => db.collection('system_codes');
 
-/* ---------- Middleware admin ---------- */
-function requireAdmin(req, res, next) {
-    const secret = process.env.ADMIN_SECRET || '';
-    if (!secret) {
-        return res.fail('Server chưa cấu hình ADMIN_SECRET.', ERROR_CODES.ADMIN_REQUIRED, 503);
-    }
-    const provided = req.headers['x-admin-secret'] || (req.body && req.body.adminSecret) || '';
-    if (provided !== secret) {
-        return res.fail('Không có quyền admin.', ERROR_CODES.ADMIN_REQUIRED, 403);
-    }
-    return next();
-}
+/* requireAdmin dùng chung từ middleware/auth.js (chống giả mạo: token + email whitelist + DB role). */
 
 /* ------------------------------------------------------------
    GET /my-code
@@ -109,11 +99,13 @@ async function _useUserCode(req, res, code) {
         if (!inviterSnap.exists || inviterSnap.data().inviteCode !== code) {
             const e = new Error('CODE_NOT_FOUND'); e.code = ERROR_CODES.CODE_NOT_FOUND; e.status = 404; throw e;
         }
-        if (inviteeSnap.data().inviteUsed) {
-            const e = new Error('CODE_USED'); e.code = ERROR_CODES.CODE_USED; e.status = 400; throw e;
-        }
         const inviteeData = inviteeSnap.data();
         const inviterData = inviterSnap.data();
+        // Admin (inviteBypass) KHÔNG bị giới hạn lượt nhập mã mời — phục vụ test.
+        const inviteeBypass = !!inviteeData.inviteBypass || inviteeData.role === 'admin';
+        if (!inviteeBypass && inviteeData.inviteUsed) {
+            const e = new Error('CODE_USED'); e.code = ERROR_CODES.CODE_USED; e.status = 400; throw e;
+        }
 
         // Cấp 2 (đệ quy): nếu người mời (A) cũng từng nhập mã của C → C nhận thưởng nhỏ.
         let grandUid = null, grandCoinsAfter = null;
@@ -135,16 +127,15 @@ async function _useUserCode(req, res, code) {
             }
         }
 
-        // Người được mời (B): quà chào mừng + ĐÁNH DẤU inviteUsed (khóa).
-        tx.update(inviteeRef, {
+        // Người được mời (B): quà chào mừng. Admin (bypass) KHÔNG bị đánh dấu khóa → nhập lại được.
+        tx.update(inviteeRef, Object.assign({
             invitedBy: inviterUid,
-            inviteUsed: true,
             coins: FieldValue.increment(REFERRAL_REWARDS.WELCOME),
             rewardsHistory: FieldValue.arrayUnion({
                 type: 'invite_welcome', inviterUid, code, coins: REFERRAL_REWARDS.WELCOME, at: now
             }),
             lastLoginAt: now
-        });
+        }, inviteeBypass ? {} : { inviteUsed: true }));
         // Người mời trực tiếp (A, cấp 1).
         tx.update(inviterRef, {
             inviteCount: FieldValue.increment(1),
@@ -160,10 +151,12 @@ async function _useUserCode(req, res, code) {
             inviterDisplayName: inviterData.displayName || 'Người chơi',
             inviteeCoinsAfter: (Number(inviteeData.coins) || 0) + REFERRAL_REWARDS.WELCOME,
             inviterCoinsAfter: (Number(inviterData.coins) || 0) + REFERRAL_REWARDS.DIRECT,
-            grandUid, grandCoinsAfter
+            grandUid, grandCoinsAfter,
+            inviteeBypass
         };
     });
 
+    const locked = !result.inviteeBypass;
     return res.ok({
         codeUsed: code, codeType: 'user',
         inviter: { uid: inviterUid, displayName: result.inviterDisplayName },
@@ -174,8 +167,10 @@ async function _useUserCode(req, res, code) {
             secondLevelEligible: !!result.grandUid
         },
         yourCoins: result.inviteeCoinsAfter,
-        inviteLocked: true
-    }, 'Nhập mã mời thành công. Bạn không thể nhập mã mời của người khác nữa.');
+        inviteLocked: locked
+    }, locked
+        ? 'Nhập mã mời thành công. Bạn không thể nhập mã mời của người khác nữa.'
+        : 'Nhập mã mời thành công (tài khoản quản trị — vẫn nhập lại được).');
 }
 
 /* ---------- Mã hệ thống (system_codes) — KHÔNG khóa inviteUsed ---------- */
@@ -303,7 +298,7 @@ router.get('/history', verifyToken, async (req, res, next) => {
    - Nếu truyền code cụ thể (vd HY_2306TL) → dùng đúng code đó.
    - Nếu không → sinh ngẫu nhiên với prefix PXE/GNTU.
 ------------------------------------------------------------ */
-router.post('/admin/system-code', requireAdmin, async (req, res, next) => {
+router.post('/admin/system-code', optionalAuth, requireAdmin, async (req, res, next) => {
     try {
         const body = req.body || {};
         let code = body.code ? String(body.code).trim().toUpperCase() : null;
@@ -313,7 +308,7 @@ router.post('/admin/system-code', requireAdmin, async (req, res, next) => {
         const rewardCoins = Math.max(0, Math.min(100000, Number(body.rewardCoins) || 100));
         const maxUses = Math.max(1, Math.min(1000000, Number(body.maxUses) || 1));
         const note = String(body.note || '').slice(0, 200);
-        const prefix = [CODE_PREFIX.SYSTEM_PXE, CODE_PREFIX.SYSTEM_GNTU].includes(body.prefix) ? body.prefix : 'SYS';
+        const prefix = SYSTEM_PREFIXES.includes(body.prefix) ? body.prefix : CODE_PREFIX.SYSTEM_HY;
 
         if (!code) {
             code = await generateUniqueInviteCode(prefix);
@@ -330,7 +325,7 @@ router.post('/admin/system-code', requireAdmin, async (req, res, next) => {
         }
         const now = Timestamp.now();
         await SYSTEM_CODES().doc(code).set({
-            code, prefix: code.startsWith(CODE_PREFIX.USER) ? CODE_PREFIX.USER : prefix,
+            code, prefix: SYSTEM_PREFIXES.find((p) => code.startsWith(p)) || prefix,
             rewardCoins, maxUses, uses: 0, active: true,
             note, createdAt: now, createdBy: 'admin'
         });
