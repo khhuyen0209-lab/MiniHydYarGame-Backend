@@ -227,10 +227,18 @@ router.get('/my-invites', verifyToken, async (req, res, next) => {
     try {
         let limit = parseInt(req.query.limit, 10) || 50;
         limit = Math.min(Math.max(limit, 1), 100);
-        const snap = await USERS().where('invitedBy', '==', req.user.uid).orderBy('createdAt', 'desc').limit(limit).get();
+        // FIX: không dùng orderBy('createdAt') cùng where('invitedBy') — yêu cầu
+        // composite index; nếu thiếu index → query luôn lỗi → tab "Người bạn mời"
+        // báo lỗi vĩnh viễn. Query không orderBy rồi sort trong memory.
+        const snap = await USERS().where('invitedBy', '==', req.user.uid).limit(limit).get();
         const invites = snap.docs.map((d) => {
             const data = d.data();
             return { uid: d.id, displayName: data.displayName || 'Người chơi', avatar: data.avatar || '', createdAt: data.createdAt || null };
+        });
+        invites.sort((a, b) => {
+            const ta = a.createdAt && a.createdAt._seconds ? a.createdAt._seconds : 0;
+            const tb = b.createdAt && b.createdAt._seconds ? b.createdAt._seconds : 0;
+            return tb - ta;
         });
         return res.ok({ invites, total: invites.length }, 'Lấy danh sách mời thành công.');
     } catch (err) { return next(err); }

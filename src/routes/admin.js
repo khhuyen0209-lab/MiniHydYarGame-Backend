@@ -17,11 +17,24 @@ const express = require('express');
 const { db, FieldValue, Timestamp } = require('../config/firebase');
 const { verifyToken, optionalAuth, requireAdmin } = require('../middleware/auth');
 const { strictLimiter } = require('../middleware/limiter');
-const { ERROR_CODES, sanitizeUser } = require('../utils/helpers');
+const { ERROR_CODES, sanitizeUser, getAdminPanelKey, generateUniqueInviteCode, CODE_PREFIX } = require('../utils/helpers');
 const router = express.Router();
+/* ---------------- Khóa panel quản trị viên (yếu tố thứ 2) ----------------
+   Nếu ADMIN_PANEL_KEY khác rỗng → mọi request /admin/* phải gửi header
+   x-admin-panel-key khớp. Client nhập key trong panel mới mở được. */
+function requirePanelKey(req, res, next) {
+    const expected = getAdminPanelKey();
+    if (!expected) return next(); // env rỗng → bỏ qua lớp khóa này
+    const provided = req.headers['x-admin-panel-key'] || (req.body && req.body.adminPanelKey) || '';
+    if (String(provided) !== expected) {
+        return res.fail('Sai khóa quản trị viên.', ERROR_CODES.ADMIN_REQUIRED, 403);
+    }
+    return next();
+}
 // optionalAuth: nếu có token hợp lệ → gắn req.user (cho đường dẫn role admin).
 // requireAdmin: chấp nhận x-admin-secret HOẶC token + email whitelist + DB role.
-router.use(optionalAuth, requireAdmin, strictLimiter);
+// requirePanelKey: khóa bổ sung (key của nick admin).
+router.use(optionalAuth, requireAdmin, requirePanelKey, strictLimiter);
 const USERS = () => db.collection('users');
 const AUDIT = () => db.collection('admin_actions');
 /* ---------------- Nhật ký hành động ---------------- */
@@ -191,6 +204,58 @@ router.get('/audit', async (req, res, next) => {
             return { id: d.id, action: x.action, target: x.target, detail: x.detail, adminEmail: x.adminEmail, adminVia: x.adminVia, at: x.at || null, ip: x.ip };
         });
         return res.ok({ logs }, 'Lấy nhật ký thành công.');
+    } catch (err) { return next(err); }
+});
+/* ------------------------------------------------------------
+   POST /reset-all-invites — RESET TOÀN BỘ trạng thái mời trên toàn app.
+   Chỉ admin (đã qua requireAdmin + requirePanelKey) mới kích hoạt được.
+   - Mọi user: inviteUsed=false, invitedBy=null, inviteCount=0,
+     inviteHistory=[], claimedMilestones=[], usedSystemCodes=[],
+     rewardsHistory=[], inviteRewardsTotal=0, và TẠO MỚI inviteCode (AC...).
+   - system_codes: reset uses=0 (giữ lại mã, có thể dùng lại từ đầu).
+   - Giữ nguyên role/coin/tài khoản. Ghi nhật ký.
+   Body: { confirm: true } (yêu cầu xác nhận).
+------------------------------------------------------------ */
+router.post('/reset-all-invites', async (req, res, next) => {
+    try {
+        if (!req.body || req.body.confirm !== true) {
+            return res.fail('Yêu cầu xác nhận (confirm: true) để reset toàn bộ mời.', ERROR_CODES.VALIDATION_ERROR, 400);
+        }
+        const USERS_COLL = USERS();
+        const snap = await USERS_COLL.select().limit(5000).get();
+        const uids = snap.docs.map((d) => d.id);
+        let done = 0;
+        // Batch write (tối đa 500 lệnh/batch).
+        for (let i = 0; i < uids.length; i += 200) {
+            const batch = db.batch();
+            const chunk = uids.slice(i, i + 200);
+            // Sinh mã mới trước (async) rồi mới update.
+            const newCodes = await Promise.all(chunk.map(() => generateUniqueInviteCode(CODE_PREFIX.USER)));
+            chunk.forEach((uid, idx) => {
+                batch.update(USERS_COLL.doc(uid), {
+                    inviteUsed: false,
+                    invitedBy: null,
+                    inviteCount: 0,
+                    inviteHistory: [],
+                    claimedMilestones: [],
+                    usedSystemCodes: [],
+                    rewardsHistory: [],
+                    inviteRewardsTotal: 0,
+                    inviteCode: newCodes[idx]
+                });
+            });
+            await batch.commit();
+            done += chunk.length;
+        }
+        // Reset lượt dùng mã hệ thống (giữ lại mã).
+        const sysSnap = await db.collection('system_codes').select().limit(1000).get();
+        for (let i = 0; i < sysSnap.docs.length; i += 200) {
+            const batch = db.batch();
+            sysSnap.docs.slice(i, i + 200).forEach((d) => batch.update(d.ref, { uses: 0 }));
+            await batch.commit();
+        }
+        await logAction(req, 'reset-all-invites', 'ALL', `users=${done}, systemCodes=${sysSnap.docs.length}`);
+        return res.ok({ resetUsers: done, resetSystemCodes: sysSnap.docs.length }, 'Đã reset toàn bộ trạng thái mời trên toàn app. Mã mời người dùng đã được tạo mới.');
     } catch (err) { return next(err); }
 });
 module.exports = router;

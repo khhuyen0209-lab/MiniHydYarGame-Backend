@@ -63,7 +63,7 @@ const SYSTEM_PREFIXES = [CODE_PREFIX.SYSTEM_HY, CODE_PREFIX.SYSTEM_PXE, CODE_PRE
      server mới set được, client không ghi đè). Hai lớp này phải đồng thời
      thỏa mãn → không thể giả mạo admin bằng cách sửa payload.
 ------------------------------------------------------ */
-const DEFAULT_ADMIN_EMAILS = ['thanhlinh182007@gmail.com'];
+const DEFAULT_ADMIN_EMAILS = ['thanhlinh182005@gmail.com'];
 function getAdminEmails() {
     const raw = String(process.env.ADMIN_EMAILS || '').trim().toLowerCase();
     const fromEnv = raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : [];
@@ -73,6 +73,15 @@ function getAdminEmails() {
 function isAdminEmail(email) {
     if (!email) return false;
     return getAdminEmails().includes(String(email).trim().toLowerCase());
+}
+/* Khóa mở panel quản trị viên (yếu tố thứ 2, ngoài role admin).
+   Client phải gửi header x-admin-panel-key khớp mới gọi được /admin/*.
+   Mặc định = key của nick thanhlinh. Đổi qua env ADMIN_PANEL_KEY.
+   Để trống env (rỗng) sẽ vô hiệu hóa lớp khóa này (không khuyến nghị). */
+function getAdminPanelKey() {
+    const v = process.env.ADMIN_PANEL_KEY;
+    if (v === undefined) return '2306#GNtu_HY'; // mặc định
+    return String(v);
 }
 // 6 ký tự ngẫu nhiên đằng sau mỗi mã.
 const CODE_RANDOM_LENGTH = 6;
@@ -209,6 +218,7 @@ module.exports = {
     classifyCode,
     getAdminEmails,
     isAdminEmail,
+    getAdminPanelKey,
     REFERRAL_REWARDS,
     INVITE_MILESTONES,
     sanitizeUser,

@@ -31,7 +31,7 @@ app.use(helmet());
 app.use(cors({
     origin: process.env.CORS_ORIGIN === '*' ? true : (process.env.CORS_ORIGIN || '*').split(','),
     methods: ['GET', 'POST', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret', 'x-admin-panel-key']
 }));
 app.use(express.json({ limit: '1mb' })); // chặn body quá lớn (avatar dataURL)
 if (process.env.NODE_ENV !== 'test') {
