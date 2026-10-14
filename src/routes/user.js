@@ -12,7 +12,7 @@
    ============================================================ */
 'use strict';
 const express = require('express');
-const { db, FieldValue, Timestamp } = require('../config/firebase');
+const { db, auth, FieldValue, Timestamp } = require('../config/firebase');
 const { verifyToken, optionalAuth } = require('../middleware/auth');
 const { strictLimiter } = require('../middleware/limiter');
 const presence = require('../utils/presence');
@@ -81,7 +81,17 @@ router.use(verifyToken);
 ------------------------------------------------------------ */
 router.post('/init', strictLimiter, async (req, res, next) => {
     try {
-        const { uid, email, name, picture } = req.user;
+        const { uid, email, name } = req.user;
+        // Lấy avatar Google đáng tin cậy: claim `picture` trong idToken CÓ THỂ TRỐNG
+        // → fallback sang auth.getUser(uid).photoURL (Firebase Admin). Nhờ đó người
+        // khác cũng thấy avatar Google (lưu vào field avatar trong Firestore).
+        let picture = req.user.picture || '';
+        if (!picture) {
+            try {
+                const fbUser = await auth.getUser(uid);
+                picture = (fbUser && fbUser.photoURL) || '';
+            } catch (_) { picture = ''; }
+        }
         const userRef = USERS().doc(uid);
         const snap = await userRef.get();
         const now = Timestamp.now();
@@ -95,8 +105,24 @@ router.post('/init', strictLimiter, async (req, res, next) => {
                 updates.role = 'admin';
                 updates.inviteBypass = true; // admin không bị xét duyệt / giới hạn mã mời
             }
-            // Đồng bộ ảnh đại diện Google (photoURL) làm avatar.
-            if (picture && data.avatar !== picture) {
+            /* BACKFILL: user cũ (tạo trước khi có field) thiếu thông tin → tự điền mặc định.
+               Vd: createdAt trống, inviteCode thiếu, displayName rỗng, coins không phải số... */
+            if (!data.createdAt) updates.createdAt = data.lastLoginAt || now;
+            if (!data.displayName) updates.displayName = String(name || 'Người chơi').slice(0, 40);
+            if (!data.inviteCode) updates.inviteCode = await generateUniqueInviteCode(CODE_PREFIX.USER);
+            if (typeof data.coins !== 'number') updates.coins = 0;
+            if (!Array.isArray(data.library)) updates.library = [];
+            if (!data.highScores || typeof data.highScores !== 'object') updates.highScores = {};
+            if (!data.settings || typeof data.settings !== 'object') updates.settings = {};
+            if (typeof data.bio !== 'string') updates.bio = '';
+            if (typeof data.inviteUsed !== 'boolean') updates.inviteUsed = false;
+            if (typeof data.inviteCount !== 'number') updates.inviteCount = 0;
+            if (typeof data.inviteRewardsTotal !== 'number') updates.inviteRewardsTotal = 0;
+            // Đồng bộ avatar Google (photoURL) làm avatar — CHỈ khi user chưa đặt avatar
+            // tùy chỉnh (dataURL). Avatar tùy chỉnh được giữ nguyên, không bị Google đè.
+            const currentAvatar = data.avatar || '';
+            const isCustomAvatar = /^data:image\//i.test(currentAvatar);
+            if (picture && !isCustomAvatar && currentAvatar !== picture) {
                 updates.avatar = picture;
             }
             await userRef.update(updates);
@@ -144,7 +170,7 @@ router.get('/profile', async (req, res, next) => {
 ------------------------------------------------------------ */
 const ALLOWED_PROFILE_FIELDS = {
     displayName: (v) => typeof v === 'string' && v.trim().length > 0 && v.length <= 40,
-    avatar: (v) => typeof v === 'string' && v.length <= 500 * 1024,
+    avatar: (v) => typeof v === 'string' && v.trim().length > 0 && v.length <= 500 * 1024,
     bio: (v) => typeof v === 'string' && v.length <= 200
 };
 router.patch('/profile', async (req, res, next) => {
@@ -231,7 +257,7 @@ router.post('/sync', async (req, res, next) => {
             const profileUp = {};
             if (typeof p.displayName === 'string' && p.displayName.trim() && p.displayName.length <= 40) profileUp.displayName = p.displayName.trim();
             if (typeof p.bio === 'string' && p.bio.length <= 200) profileUp.bio = p.bio;
-            if (typeof p.avatar === 'string' && p.avatar.length <= 500 * 1024) profileUp.avatar = p.avatar;
+            if (typeof p.avatar === 'string' && p.avatar.trim().length > 0 && p.avatar.length <= 500 * 1024) profileUp.avatar = p.avatar;
             Object.assign(updates, profileUp);
         }
         // Settings: object (giới hạn kích thước bằng JSON length).

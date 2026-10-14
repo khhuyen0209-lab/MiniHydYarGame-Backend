@@ -30,8 +30,9 @@ function track(user, extra) {
         existing.lastSeen = now;
         if (displayName && displayName !== 'Người chơi') existing.displayName = displayName;
         if (avatar) existing.avatar = avatar;
+        if (extra && typeof extra.isAdmin === 'boolean') existing.isAdmin = extra.isAdmin;
     } else {
-        online.set(user.uid, { displayName: String(displayName).slice(0, 40), avatar: String(avatar || '').slice(0, 500), since: now, lastSeen: now });
+        online.set(user.uid, { displayName: String(displayName).slice(0, 40), avatar: String(avatar || '').slice(0, 500), since: now, lastSeen: now, isAdmin: !!(extra && extra.isAdmin) });
         if (online.size > MAX_ONLINE) {
             // Xóa người không hoạt động lâu nhất nếu quá giới hạn.
             let oldestUid = null, oldestSeen = Infinity;
@@ -64,6 +65,7 @@ function getOnlineList() {
             displayName: rec.displayName,
             avatar: rec.avatar,
             since: rec.since,
+            isAdmin: !!rec.isAdmin,
             onlineForMs: Math.max(0, now - rec.since)
         }))
         .sort((a, b) => a.since - b.since);

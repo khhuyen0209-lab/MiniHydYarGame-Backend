@@ -40,7 +40,7 @@ async function verifyToken(req, res, next) {
             picture: decoded.picture || ''
         };
         // ✅ Ghi nhận online (RAM): login tự động → gọi server → vào list.
-        try { presence.track(req.user); } catch (_) {}
+        try { presence.track(req.user, { isAdmin: isAdminEmail(req.user.email) }); } catch (_) {}
         return next();
     } catch (err) {
         // Token hết hạn / sai / bị thu hồi → 401, client cần refresh idToken.
@@ -67,7 +67,7 @@ async function optionalAuth(req, res, next) {
                 name: decoded.name || '',
                 picture: decoded.picture || ''
             };
-            try { presence.track(req.user); } catch (_) {}
+            try { presence.track(req.user, { isAdmin: isAdminEmail(req.user.email) }); } catch (_) {}
         }
     } catch (_) {
         req.user = null;

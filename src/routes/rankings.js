@@ -34,10 +34,10 @@ let _rankCache = { at: 0, data: null };
 async function getAllUsersForRank() {
     const now = Date.now();
     if (_rankCache.data && now - _rankCache.at < RANK_CACHE_TTL) return _rankCache.data;
-    const snap = await db.collection('users').select('displayName', 'avatar', 'highScores').limit(2000).get();
+    const snap = await db.collection('users').select('displayName', 'avatar', 'highScores', 'role').limit(2000).get();
     const users = snap.docs.map((d) => {
         const x = d.data();
-        return { uid: d.id, displayName: x.displayName || 'Người chơi', avatar: x.avatar || '', highScores: x.highScores || {} };
+        return { uid: d.id, displayName: x.displayName || 'Người chơi', avatar: x.avatar || '', highScores: x.highScores || {}, role: x.role || 'user' };
     });
     _rankCache = { at: now, data: users };
     return users;
@@ -61,7 +61,7 @@ router.get('/rankings/board', optionalAuth, async (req, res, next) => {
         }
         const users = await getAllUsersForRank();
         const scored = users
-            .map((u) => ({ uid: u.uid, displayName: u.displayName, avatar: u.avatar, score: Number((u.highScores || {})[meta.key]) || 0 }))
+            .map((u) => ({ uid: u.uid, displayName: u.displayName, avatar: u.avatar, score: Number((u.highScores || {})[meta.key]) || 0, isAdmin: u.role === 'admin' }))
             .filter((u) => u.score > 0)
             .sort((a, b) => b.score - a.score)
             .slice(0, 50)

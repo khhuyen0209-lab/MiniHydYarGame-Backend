@@ -110,6 +110,10 @@ const server = app.listen(PORT, () => {
     console.log(`   Public: ${APP_HOST}`);
     console.log(`   API   : ${API_BASE_URL}`);
 });
+/* WebSocket realtime: broadcast danh sách online (path /ws).
+   Lazy-require `ws` — nếu chưa cài package thì tự vô hiệu hóa,
+   frontend fallback về polling 5s. */
+try { require('./ws-presence').attachWSServer(server); } catch (e) { console.warn('[WS] không bật được:', e && e.message); }
 
 // Tắt mềm: đóng kết nối DB khi nhận tín hiệu shutdown.
 function gracefulShutdown(signal) {
