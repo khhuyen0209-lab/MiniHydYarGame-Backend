@@ -96,6 +96,16 @@ app.use((err, req, res, next) => {
         );
     }
 
+    // Lỗi nghiệp vụ (throw từ trong transaction / middleware, có kèm code + status).
+    // Trả ĐÚNG mã lỗi + status cho client — KHÔNG ép thành 500.
+    if (err && err.code && typeof err.status === 'number' && err.status >= 400 && err.status < 500) {
+        return res.fail(
+            err.message || 'Có lỗi xảy ra.',
+            err.code,
+            err.status
+        );
+    }
+
     return res.fail(
         'Lỗi máy chủ nội bộ. Vui lòng thử lại sau.',
         ERROR_CODES.SERVER_ERROR,

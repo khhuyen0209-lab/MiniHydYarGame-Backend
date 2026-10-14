@@ -38,6 +38,7 @@ const {
     adminCodeRewardFor,
     generateUniqueInviteCode,
     classifyCode,
+    codeVariants,
     REFERRAL_REWARDS,
     INVITE_MILESTONES,
     CODE_REGEX,
@@ -46,6 +47,24 @@ const {
 const router = express.Router();
 const USERS = () => db.collection('users');
 const SYSTEM_CODES = () => db.collection('system_codes');
+/* Tìm doc system_codes tồn tại ĐẦU TIÊN trong các biến thể mã (chống nhầm
+   dấu gạch ngang / gạch dưới khi admin tạo / sửa trực tiếp trên Firestore). */
+async function resolveSystemCode(code) {
+    const variants = codeVariants(code);
+    for (const v of variants) {
+        const snap = await SYSTEM_CODES().doc(v).get();
+        if (snap.exists) return { code: v, data: snap.data() };
+    }
+    return null;
+}
+/* Bắt lỗi nghiệp vụ throw từ trong transaction → trả ĐÚNG mã lỗi + status,
+   KHÔNG để rơi vào global handler (luôn trả 500 "Lỗi máy chủ nội bộ"). */
+function handleCodeError(err, req, res, next) {
+    if (err && err.code && err.status) {
+        return res.fail(err.message || 'Có lỗi xảy ra.', err.code, err.status);
+    }
+    return next(err);
+}
 /* ------------------------------------------------------------
    GET /my-code
 ------------------------------------------------------------ */
@@ -84,24 +103,31 @@ router.post('/use-code', verifyToken, strictLimiter, async (req, res, next) => {
             return res.fail('Mã không tồn tại. Mã hợp lệ bắt đầu bằng HY-, PXE-, GNTU-, ADM- hoặc AC-.', ERROR_CODES.CODE_NOT_FOUND, 404);
         }
         if (kind.category === 'gift') {
-            return await _useGiftCode(req, res, code, kind);
+            return await _useGiftCode(req, res, code, kind, next);
         }
         if (kind.type === 'admin') {
-            return await _useAdminCode(req, res, code, kind);
+            return await _useAdminCode(req, res, code, kind, next);
         }
         // kind.type === 'user' → mã mời người dùng (AC-)
-        return await _useUserCode(req, res, code, kind);
+        return await _useUserCode(req, res, code, kind, next);
     } catch (err) { return next(err); }
 });
 /* ---------- MÃ CODE (HY-/PXE-/GNTU-) — KHÔNG khóa inviteUsed ----------
    Mỗi mã chỉ dùng 1 lần/user (usedSystemCodes). Nhập được nhiều mã khác
    nhau. Thưởng = rewardCoins trong doc (admin sửa trực tiếp trên Firestore
    thì server chấp nhận nguyên giá trị đó). */
-async function _useGiftCode(req, res, code, kind) {
-    const codeRef = SYSTEM_CODES().doc(code);
+async function _useGiftCode(req, res, code, kind, next) {
+    const resolved = await resolveSystemCode(code);
+    if (!resolved) {
+        return res.fail('Mã không tồn tại. Mã hợp lệ bắt đầu bằng HY-, PXE- hoặc GNTU-.', ERROR_CODES.CODE_NOT_FOUND, 404);
+    }
+    const canonical = resolved.code;
+    const codeRef = SYSTEM_CODES().doc(canonical);
     const userRef = USERS().doc(req.user.uid);
     const now = Timestamp.now();
-    const result = await db.runTransaction(async (tx) => {
+    let result;
+    try {
+        result = await db.runTransaction(async (tx) => {
         const [codeSnap, userSnap] = await Promise.all([tx.get(codeRef), tx.get(userRef)]);
         if (!codeSnap.exists) {
             const e = new Error('CODE_NOT_FOUND'); e.code = ERROR_CODES.CODE_NOT_FOUND; e.status = 404; throw e;
@@ -119,7 +145,7 @@ async function _useGiftCode(req, res, code, kind) {
             const e = new Error('CODE_MAX_USES'); e.code = ERROR_CODES.CODE_MAX_USES; e.status = 400; throw e;
         }
         const used = Array.isArray(userSnap.data().usedSystemCodes) ? userSnap.data().usedSystemCodes : [];
-        if (used.includes(code)) {
+        if (used.includes(canonical)) {
             const e = new Error('CODE_ALREADY_USED'); e.code = ERROR_CODES.CODE_ALREADY_USED; e.status = 400; throw e;
         }
         // ✅ Chấp nhận chỉnh sửa trực tiếp trên Firestore: đọc nguyên rewardCoins.
@@ -127,14 +153,15 @@ async function _useGiftCode(req, res, code, kind) {
         tx.update(codeRef, { uses: FieldValue.increment(1), lastUsedAt: now });
         tx.update(userRef, {
             coins: FieldValue.increment(rewardCoins),
-            usedSystemCodes: FieldValue.arrayUnion(code),
+            usedSystemCodes: FieldValue.arrayUnion(canonical),
             rewardsHistory: FieldValue.arrayUnion({
-                type: 'gift_code', code, prefix: kind.prefix, coins: rewardCoins, at: now
+                type: 'gift_code', code: canonical, prefix: kind.prefix, coins: rewardCoins, at: now
             }),
             lastLoginAt: now
         });
         return { rewardCoins, coinsAfter: (Number(userSnap.data().coins) || 0) + rewardCoins, note: cd.note || '' };
-    });
+        });
+    } catch (err) { return handleCodeError(err, req, res, next); }
     return res.ok({
         codeUsed: code, codeCategory: 'gift', codeType: kind.type,
         reward: { youReceived: result.rewardCoins },
@@ -146,11 +173,18 @@ async function _useGiftCode(req, res, code, kind) {
 /* ---------- MÃ MỜI ADMIN (ADM-) — nhập 1 lần → KHÓA inviteUsed ----------
    Thưởng tối thiểu 900 coin (mỗi admin khác nhau; "thanh linh" = 950 cao
    nhất). Lưu trong system_codes. Admin sửa trực tiếp Firestore → chấp nhận. */
-async function _useAdminCode(req, res, code, kind) {
-    const codeRef = SYSTEM_CODES().doc(code);
+async function _useAdminCode(req, res, code, kind, next) {
+    const resolved = await resolveSystemCode(code);
+    if (!resolved) {
+        return res.fail('Mã quản trị viên không tồn tại. Mã hợp lệ bắt đầu bằng ADM-.', ERROR_CODES.CODE_NOT_FOUND, 404);
+    }
+    const canonical = resolved.code;
+    const codeRef = SYSTEM_CODES().doc(canonical);
     const userRef = USERS().doc(req.user.uid);
     const now = Timestamp.now();
-    const result = await db.runTransaction(async (tx) => {
+    let result;
+    try {
+        result = await db.runTransaction(async (tx) => {
         const [codeSnap, userSnap] = await Promise.all([tx.get(codeRef), tx.get(userRef)]);
         if (!codeSnap.exists) {
             const e = new Error('CODE_NOT_FOUND'); e.code = ERROR_CODES.CODE_NOT_FOUND; e.status = 404; throw e;
@@ -170,7 +204,7 @@ async function _useAdminCode(req, res, code, kind) {
         const userData = userSnap.data();
         const bypass = !!userData.inviteBypass || userData.role === 'admin';
         const used = Array.isArray(userData.usedSystemCodes) ? userData.usedSystemCodes : [];
-        if (used.includes(code)) {
+        if (used.includes(canonical)) {
             const e = new Error('CODE_ALREADY_USED'); e.code = ERROR_CODES.CODE_ALREADY_USED; e.status = 400; throw e;
         }
         if (!bypass && userData.inviteUsed) {
@@ -182,10 +216,10 @@ async function _useAdminCode(req, res, code, kind) {
         tx.update(codeRef, { uses: FieldValue.increment(1), lastUsedAt: now });
         tx.update(userRef, Object.assign({
             coins: FieldValue.increment(rewardCoins),
-            usedSystemCodes: FieldValue.arrayUnion(code),
-            invitedByAdmin: code,
+            usedSystemCodes: FieldValue.arrayUnion(canonical),
+            invitedByAdmin: canonical,
             rewardsHistory: FieldValue.arrayUnion({
-                type: 'admin_code', code, prefix: kind.prefix, adminName, coins: rewardCoins, at: now
+                type: 'admin_code', code: canonical, prefix: kind.prefix, adminName, coins: rewardCoins, at: now
             }),
             lastLoginAt: now
         }, bypass ? {} : { inviteUsed: true }));
@@ -196,7 +230,8 @@ async function _useAdminCode(req, res, code, kind) {
             note: cd.note || '',
             bypass
         };
-    });
+        });
+    } catch (err) { return handleCodeError(err, req, res, next); }
     const locked = !result.bypass;
     return res.ok({
         codeUsed: code, codeCategory: 'invite', codeType: 'admin',
@@ -210,8 +245,10 @@ async function _useAdminCode(req, res, code, kind) {
         : 'Nhập mã quản trị viên thành công (tài khoản quản trị — vẫn nhập lại được).');
 }
 /* ---------- MÃ MỜI NGƯỜI DÙNG (AC-) — KHÓA inviteUsed ---------- */
-async function _useUserCode(req, res, code, kind) {
-    const found = await USERS().where('inviteCode', '==', code).limit(1).get();
+async function _useUserCode(req, res, code, kind, next) {
+    // Chấp nhận cả có / không dấu gạch ngang (vd AC-XXXXXX ↔ ACXXXXXX).
+    const variants = codeVariants(code).slice(0, 10);
+    const found = await USERS().where('inviteCode', 'in', variants).limit(1).get();
     if (found.empty) {
         return res.fail('Mã mời không tồn tại.', ERROR_CODES.CODE_NOT_FOUND, 404);
     }
@@ -222,16 +259,19 @@ async function _useUserCode(req, res, code, kind) {
     }
     const inviteeRef = USERS().doc(req.user.uid);
     const now = Timestamp.now();
-    const result = await db.runTransaction(async (tx) => {
+    let result;
+    try {
+        result = await db.runTransaction(async (tx) => {
         const [inviteeSnap, inviterSnap] = await Promise.all([tx.get(inviteeRef), tx.get(inviterRef)]);
         if (!inviteeSnap.exists) {
             const e = new Error('USER_NOT_INITIALIZED'); e.code = ERROR_CODES.USER_NOT_INITIALIZED; e.status = 404; throw e;
         }
-        if (!inviterSnap.exists || inviterSnap.data().inviteCode !== code) {
+        if (!inviterSnap.exists || !variants.includes(inviterSnap.data().inviteCode)) {
             const e = new Error('CODE_NOT_FOUND'); e.code = ERROR_CODES.CODE_NOT_FOUND; e.status = 404; throw e;
         }
         const inviteeData = inviteeSnap.data();
         const inviterData = inviterSnap.data();
+        const canonical = inviterData.inviteCode || code;
         const inviteeBypass = !!inviteeData.inviteBypass || inviteeData.role === 'admin';
         if (!inviteeBypass && inviteeData.inviteUsed) {
             const e = new Error('CODE_USED'); e.code = ERROR_CODES.CODE_USED; e.status = 400; throw e;
@@ -248,7 +288,7 @@ async function _useUserCode(req, res, code, kind) {
                     inviteRewardsTotal: FieldValue.increment(REFERRAL_REWARDS.SECOND_LEVEL),
                     rewardsHistory: FieldValue.arrayUnion({
                         type: 'invite_second_level', fromUid: req.user.uid, viaUid: inviterUid,
-                        code, coins: REFERRAL_REWARDS.SECOND_LEVEL, at: now
+                        code: canonical, coins: REFERRAL_REWARDS.SECOND_LEVEL, at: now
                     })
                 });
             }
@@ -257,7 +297,7 @@ async function _useUserCode(req, res, code, kind) {
             invitedBy: inviterUid,
             coins: FieldValue.increment(REFERRAL_REWARDS.WELCOME),
             rewardsHistory: FieldValue.arrayUnion({
-                type: 'invite_welcome', inviterUid, code, coins: REFERRAL_REWARDS.WELCOME, at: now
+                type: 'invite_welcome', inviterUid, code: canonical, coins: REFERRAL_REWARDS.WELCOME, at: now
             }),
             lastLoginAt: now
         }, inviteeBypass ? {} : { inviteUsed: true }));
@@ -267,7 +307,7 @@ async function _useUserCode(req, res, code, kind) {
             inviteRewardsTotal: FieldValue.increment(REFERRAL_REWARDS.DIRECT),
             inviteHistory: FieldValue.arrayUnion({ uid: req.user.uid, at: now }),
             rewardsHistory: FieldValue.arrayUnion({
-                type: 'invite_direct', inviteeUid: req.user.uid, code, coins: REFERRAL_REWARDS.DIRECT, at: now
+                type: 'invite_direct', inviteeUid: req.user.uid, code: canonical, coins: REFERRAL_REWARDS.DIRECT, at: now
             })
         });
         return {
@@ -276,7 +316,8 @@ async function _useUserCode(req, res, code, kind) {
             grandUid,
             inviteeBypass
         };
-    });
+        });
+    } catch (err) { return handleCodeError(err, req, res, next); }
     const locked = !result.inviteeBypass;
     return res.ok({
         codeUsed: code, codeCategory: 'invite', codeType: 'user',

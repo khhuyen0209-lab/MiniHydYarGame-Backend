@@ -146,6 +146,28 @@ function classifyCode(code) {
     if (bare.startsWith(CODE_PREFIX.USER)) return { category: 'invite', type: 'user', prefix: CODE_PREFIX.USER, subtype: 'người chơi' };
     return null;
 }
+/** Sinh các biến thể định dạng mã để chống nhầm lẫn dấu gạch ngang / gạch dưới
+ *  khi admin tạo / sửa trực tiếp trên Firestore không theo đúng format.
+ *  VD: "ADM2306X2" → [ADM2306X2, ADM-2306X2, ADM_2306X2, ...]
+ *  Giúp nhập mã không bị "không tồn tại" chỉ do thiếu / thừa dấu gạch ngang. */
+function codeVariants(code) {
+    const bare = String(code || '').trim().toUpperCase();
+    if (!bare) return [];
+    const set = new Set([bare]);
+    const compact = bare.replace(/[-_]/g, '');
+    set.add(compact);
+    // Tách prefix (2–4 chữ cái đầu) rồi chèn lại cả '-' và '_'.
+    const m = compact.match(/^([A-Z]{2,4})([A-Z0-9]+)$/);
+    if (m) {
+        const pfx = m[1], rest = m[2];
+        set.add(pfx + '-' + rest);
+        set.add(pfx + '_' + rest);
+    }
+    // Thay thế trực tiếp dấu - ↔ _
+    set.add(bare.replace(/-/g, '_'));
+    set.add(bare.replace(/_/g, '-'));
+    return Array.from(set);
+}
 /** Mức thưởng đề xuất cho mã admin theo tên (vd "thanh linh" → 950, cao nhất). */
 function adminCodeRewardFor(nameOrEmail) {
     const key = String(nameOrEmail || '').toLowerCase().replace(/[^a-z0-9@.]/g, '');
@@ -280,6 +302,7 @@ module.exports = {
     generateInviteCode,
     generateUniqueInviteCode,
     classifyCode,
+    codeVariants,
     adminCodeRewardFor,
     getAdminEmails,
     isAdminEmail,
