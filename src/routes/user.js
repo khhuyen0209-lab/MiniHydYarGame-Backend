@@ -13,8 +13,9 @@
 'use strict';
 const express = require('express');
 const { db, FieldValue, Timestamp } = require('../config/firebase');
-const { verifyToken } = require('../middleware/auth');
+const { verifyToken, optionalAuth } = require('../middleware/auth');
 const { strictLimiter } = require('../middleware/limiter');
+const presence = require('../utils/presence');
 const {
     ERROR_CODES,
     CODE_PREFIX,
@@ -25,8 +26,55 @@ const {
 } = require('../utils/helpers');
 
 const router = express.Router();
-router.use(verifyToken);
 const USERS = () => db.collection('users');
+/* ------------------------------------------------------------
+   GET /public/:uid — Hồ sơ CÔNG KHAI của bất kỳ user nào.
+   Dùng để xem trang cá nhân khi click avatar ở bảng xếp hạng.
+   - optionalAuth: khách vẫn xem được (rankings công khai).
+   - CHỈ trả field an toàn: không email, không coin, không invite,
+     không settings/progress. Role chỉ trả để hiện badge admin.
+------------------------------------------------------------ */
+function publicProfileOf(data, uid) {
+    if (!data) return null;
+    const role = data.role || 'user';
+    const highScores = data.highScores || {};
+    const scores = Object.values(highScores).map((v) => Number(v) || 0);
+    const bestScore = scores.length ? Math.max(...scores) : 0;
+    let createdAtMs = null;
+    try {
+        if (data.createdAt && typeof data.createdAt.toDate === 'function') {
+            createdAtMs = data.createdAt.toDate().getTime();
+        } else if (data.createdAt && data.createdAt._seconds != null) {
+            createdAtMs = data.createdAt._seconds * 1000;
+        }
+    } catch (_) { createdAtMs = null; }
+    return {
+        uid: uid || data.uid || null,
+        displayName: data.displayName || 'Người chơi',
+        avatar: data.avatar || '',
+        bio: data.bio || '',
+        role: role,
+        isAdmin: role === 'admin' || isAdminEmail(data.email || ''),
+        createdAt: createdAtMs,
+        totalGames: Array.isArray(data.library) ? data.library.length : 0,
+        highScores: highScores,
+        bestScore: bestScore,
+        online: presence.isOnline(uid || data.uid)
+    };
+}
+router.get('/public/:uid', optionalAuth, strictLimiter, async (req, res, next) => {
+    try {
+        const uid = String(req.params.uid || '').trim();
+        if (!uid) return res.fail('Thiếu uid.', ERROR_CODES.VALIDATION_ERROR, 400);
+        const snap = await USERS().doc(uid).get();
+        if (!snap.exists) return res.fail('Không tìm thấy người dùng này.', ERROR_CODES.USER_NOT_INITIALIZED, 404);
+        return res.ok({ user: publicProfileOf(snap.data(), snap.id) }, 'Lấy hồ sơ công khai thành công.');
+    } catch (err) { return next(err); }
+});
+/* ------------------------------------------------------------
+   Mọi route bên dưới đều yêu cầu token hợp lệ.
+------------------------------------------------------------ */
+router.use(verifyToken);
 
 /* ------------------------------------------------------------
    POST /init — Idempotent.

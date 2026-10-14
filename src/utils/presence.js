@@ -69,5 +69,13 @@ function getOnlineList() {
         .sort((a, b) => a.since - b.since);
 }
 function getOnlineCount() { cleanup(); return online.size; }
+/** Kiểm tra 1 uid có đang online không (RAM, có TTL 2 phút). */
+function isOnline(uid) {
+    if (!uid) return false;
+    cleanup();
+    const rec = online.get(uid);
+    if (!rec) return false;
+    return (Date.now() - rec.lastSeen) <= ONLINE_TTL_MS;
+}
 function remove(uid) { if (uid) online.delete(uid); }
-module.exports = { track, getOnlineList, getOnlineCount, remove, cleanup, ONLINE_TTL_MS };
+module.exports = { track, getOnlineList, getOnlineCount, isOnline, remove, cleanup, ONLINE_TTL_MS };
