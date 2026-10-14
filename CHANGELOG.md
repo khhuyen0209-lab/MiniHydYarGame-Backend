@@ -1,4 +1,8 @@
 # CHANGELOG — MiniGame HY Backend (đã sửa đổi)
+## v1.1 — isAdmin đồng nhất giữa bảng xếp hạng & danh sách online
+- GET /rankings/board: isAdmin = role==='admin' HOẶC email thuộc ADMIN_EMAILS (khớp với sanitizeUser), đã select thêm field email.
+- GET /presence/online & WS presence: isAdmin đã có sẵn từ presence.track() (auth middleware truyền isAdminEmail).
+
 
 ## Thay đổi chính
 

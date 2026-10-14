@@ -19,6 +19,7 @@ const express = require('express');
 const { db } = require('../config/firebase');
 const { verifyToken, optionalAuth } = require('../middleware/auth');
 const presence = require('../utils/presence');
+const { isAdminEmail } = require('../utils/helpers');
 const router = express.Router();
 /* Map game có bảng xếp hạng: key trong highScores ↔ tên hiển thị.
    (Khớp với HS_MAP trong routes/user.js & GameScriptMap frontend.) */
@@ -34,10 +35,10 @@ let _rankCache = { at: 0, data: null };
 async function getAllUsersForRank() {
     const now = Date.now();
     if (_rankCache.data && now - _rankCache.at < RANK_CACHE_TTL) return _rankCache.data;
-    const snap = await db.collection('users').select('displayName', 'avatar', 'highScores', 'role').limit(2000).get();
+    const snap = await db.collection('users').select('displayName', 'avatar', 'highScores', 'role', 'email').limit(2000).get();
     const users = snap.docs.map((d) => {
         const x = d.data();
-        return { uid: d.id, displayName: x.displayName || 'Người chơi', avatar: x.avatar || '', highScores: x.highScores || {}, role: x.role || 'user' };
+        return { uid: d.id, displayName: x.displayName || 'Người chơi', avatar: x.avatar || '', highScores: x.highScores || {}, role: x.role || 'user', email: x.email || '' };
     });
     _rankCache = { at: now, data: users };
     return users;
@@ -61,7 +62,7 @@ router.get('/rankings/board', optionalAuth, async (req, res, next) => {
         }
         const users = await getAllUsersForRank();
         const scored = users
-            .map((u) => ({ uid: u.uid, displayName: u.displayName, avatar: u.avatar, score: Number((u.highScores || {})[meta.key]) || 0, isAdmin: u.role === 'admin' }))
+            .map((u) => ({ uid: u.uid, displayName: u.displayName, avatar: u.avatar, score: Number((u.highScores || {})[meta.key]) || 0, isAdmin: u.role === 'admin' || isAdminEmail(u.email) }))
             .filter((u) => u.score > 0)
             .sort((a, b) => b.score - a.score)
             .slice(0, 50)
