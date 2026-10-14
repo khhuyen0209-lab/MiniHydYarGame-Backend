@@ -152,18 +152,34 @@ function classifyCode(code) {
 /** Sinh các biến thể định dạng mã để tương thích ngược với mã cũ có dấu
  *  gạch ngang / gạch dưới (khi admin tạo / sửa trực tiếp trên Firestore).
  *  Tối đa 4 biến thể: bản gốc, bản bỏ dấu, và bản chèn '-' / '_' sau prefix.
- *  VD: "ADM2306X2" → [ADM2306X2, ADM-2306X2, ADM_2306X2] */
+ *  VD: "ADM2306X2" → [ADM2306X2, ADM-2306X2, ADM_2306X2]
+ *  ✅ FIX: tách prefix theo DANH SÁCH ĐÃ BIẾT (kiểm tra từ dài → ngắn),
+ *     KHÔNG dùng regex greedy [A-Z]{2,4} — greedy sẽ ăn nhầm phần ngẫu nhiên
+ *     bắt đầu bằng chữ cái vào prefix (vd "ADMAFEZ49" bị tách thành "ADMA" +
+ *     "FEZ49" → sinh sai "ADMA-FEZ49", không tìm thấy doc "ADM-AFEZ49"). */
 function codeVariants(code) {
     const bare = String(code || '').trim().toUpperCase();
     if (!bare) return [];
     const set = new Set([bare]);
     const compact = bare.replace(/[-_]/g, '');
     set.add(compact);
-    // Tách prefix (2–4 chữ cái đầu) rồi chèn lại cả '-' và '_' (tương thích mã cũ).
-    const m = compact.match(/^([A-Z]{2,4})([A-Z0-9]+)$/);
-    if (m) {
-        set.add(m[1] + '-' + m[2]);
-        set.add(m[1] + '_' + m[2]);
+    // Tách prefix theo danh sách đã biết, kiểm tra từ DÀI → NGẮN để GNTU (4)
+    // được nhận diện trước PXE/ADM (3) và HY/AC (2).
+    const KNOWN_PREFIXES = [
+        CODE_PREFIX.SYSTEM_GNTU, // GNTU (4)
+        CODE_PREFIX.SYSTEM_PXE,  // PXE  (3)
+        CODE_PREFIX.ADMIN,       // ADM  (3)
+        CODE_PREFIX.SYSTEM_HY,   // HY   (2)
+        CODE_PREFIX.USER         // AC   (2)
+    ];
+    let prefix = null;
+    for (const p of KNOWN_PREFIXES) {
+        if (compact.startsWith(p)) { prefix = p; break; }
+    }
+    if (prefix && compact.length > prefix.length) {
+        const rest = compact.slice(prefix.length);
+        set.add(prefix + '-' + rest);
+        set.add(prefix + '_' + rest);
     }
     return Array.from(set);
 }
