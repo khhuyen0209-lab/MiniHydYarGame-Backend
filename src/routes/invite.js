@@ -96,7 +96,7 @@ router.post('/use-code', verifyToken, strictLimiter, async (req, res, next) => {
         const rawCode = (req.body && req.body.code) ? String(req.body.code) : '';
         const code = rawCode.trim().toUpperCase();
         if (!code || !CODE_REGEX.test(code)) {
-            return res.fail('Mã không hợp lệ (4–24 ký tự chữ/số/dấu gạch ngang).', ERROR_CODES.VALIDATION_ERROR, 400);
+            return res.fail('Mã không hợp lệ (3–24 ký tự chữ/số, có thể có dấu gạch ngang). Hợp lệ: HY / AC / PXE / GNTU / ADM + phần ngẫu nhiên.', ERROR_CODES.VALIDATION_ERROR, 400);
         }
         const kind = classifyCode(code);
         if (!kind) {

@@ -39,15 +39,18 @@ function attachResponseHelpers(req, res, next) {
 }
 
 /* ---------------- Mã mời ----------------
-   ĐỊNH DẠNG MỚI (theo yêu cầu): tiền tố + dấu gạch ngang + phần ngẫu nhiên.
-     AC-XXXXXX   = mã mời người dùng (user) — MÃ MỜI, nhập 1 lần → khóa.
-     ADM-XXXXXX  = mã mời quản trị viên (admin) — MÃ MỜI, nhập 1 lần → khóa.
-     HY-XXXXXX   = mã hệ thống (system) — MÃ CODE, thưởng cơ bản 250 coin,
+   ĐỊNH DẠNG: tiền tố + phần ngẫu nhiên (KHÔNG có dấu gạch ngang).
+     ACXXXXXX    = mã mời người dùng (user) — MÃ MỜI, nhập 1 lần → khóa.
+     ADMXXXXXX   = mã mời quản trị viên (admin) — MÃ MỜI, nhập 1 lần → khóa.
+     HYXXXXXX    = mã hệ thống (system) — MÃ CODE, thưởng cơ bản 250 coin,
                    không giới hạn số lần nhập (nhưng mỗi mã chỉ dùng 1 lần/user).
-     PXE-/GNTU-  = mã sự kiện đặc biệt — MÃ CODE, thưởng tối thiểu 1000 coin,
-                   cơ chế giống HY.
-   Tương thích ngược: mã cũ không có dấu gạch ngang (vd HY_2306TL, ACXXXXXX)
-   vẫn nhận diện và dùng được bình thường.
+     PXEXXXXXX / GNTUXXXXXX = mã sự kiện đặc biệt — MÃ CODE, thưởng ≥1000 coin.
+   5 tiền tố được chấp nhận: HY, AC, PXE, GNTU, ADM.
+   Tương thích ngược: mã cũ có dấu gạch ngang / gạch dưới (vd HY_2306TL,
+   ADM-XXXXXX) vẫn nhận diện và dùng được bình thường (xem codeVariants).
+   ✅ Server KHÔNG bao giờ ghi đè mã đã có: chỉ sinh mã mới khi user chưa có
+      inviteCode. Admin sửa trực tiếp inviteCode / system_codes trên Firestore
+      thì server đọc nguyên giá trị đó (không ép format, không sinh lại).
 ------------------------------------------------------ */
 const CODE_PREFIX = Object.freeze({
     USER: 'AC',
@@ -56,8 +59,8 @@ const CODE_PREFIX = Object.freeze({
     SYSTEM_GNTU: 'GNTU',
     ADMIN: 'ADM'
 });
-// Dấu phân cách giữa tiền tố và phần ngẫu nhiên.
-const CODE_SEPARATOR = '-';
+// Không dùng dấu phân cách: mã = tiền tố + phần ngẫu nhiên (vd ADM2306X2).
+const CODE_SEPARATOR = '';
 // MÃ CODE (quà tặng / sự kiện): nhập nhiều lần được, mỗi mã chỉ dùng 1 lần/user.
 const GIFT_PREFIXES = [CODE_PREFIX.SYSTEM_HY, CODE_PREFIX.SYSTEM_PXE, CODE_PREFIX.SYSTEM_GNTU];
 // MÃ MỜI (người dùng / quản trị): nhập 1 lần → khóa không nhập lại được.
@@ -146,26 +149,22 @@ function classifyCode(code) {
     if (bare.startsWith(CODE_PREFIX.USER)) return { category: 'invite', type: 'user', prefix: CODE_PREFIX.USER, subtype: 'người chơi' };
     return null;
 }
-/** Sinh các biến thể định dạng mã để chống nhầm lẫn dấu gạch ngang / gạch dưới
- *  khi admin tạo / sửa trực tiếp trên Firestore không theo đúng format.
- *  VD: "ADM2306X2" → [ADM2306X2, ADM-2306X2, ADM_2306X2, ...]
- *  Giúp nhập mã không bị "không tồn tại" chỉ do thiếu / thừa dấu gạch ngang. */
+/** Sinh các biến thể định dạng mã để tương thích ngược với mã cũ có dấu
+ *  gạch ngang / gạch dưới (khi admin tạo / sửa trực tiếp trên Firestore).
+ *  Tối đa 4 biến thể: bản gốc, bản bỏ dấu, và bản chèn '-' / '_' sau prefix.
+ *  VD: "ADM2306X2" → [ADM2306X2, ADM-2306X2, ADM_2306X2] */
 function codeVariants(code) {
     const bare = String(code || '').trim().toUpperCase();
     if (!bare) return [];
     const set = new Set([bare]);
     const compact = bare.replace(/[-_]/g, '');
     set.add(compact);
-    // Tách prefix (2–4 chữ cái đầu) rồi chèn lại cả '-' và '_'.
+    // Tách prefix (2–4 chữ cái đầu) rồi chèn lại cả '-' và '_' (tương thích mã cũ).
     const m = compact.match(/^([A-Z]{2,4})([A-Z0-9]+)$/);
     if (m) {
-        const pfx = m[1], rest = m[2];
-        set.add(pfx + '-' + rest);
-        set.add(pfx + '_' + rest);
+        set.add(m[1] + '-' + m[2]);
+        set.add(m[1] + '_' + m[2]);
     }
-    // Thay thế trực tiếp dấu - ↔ _
-    set.add(bare.replace(/-/g, '_'));
-    set.add(bare.replace(/_/g, '-'));
     return Array.from(set);
 }
 /** Mức thưởng đề xuất cho mã admin theo tên (vd "thanh linh" → 950, cao nhất). */
