@@ -21,6 +21,7 @@ const {
     CODE_PREFIX,
     generateUniqueInviteCode,
     isAdminEmail,
+    buildDefaultInventory,
     sanitizeUser,
     computeStats
 } = require('../utils/helpers');
@@ -118,6 +119,8 @@ router.post('/init', strictLimiter, async (req, res, next) => {
             if (typeof data.inviteUsed !== 'boolean') updates.inviteUsed = false;
             if (typeof data.inviteCount !== 'number') updates.inviteCount = 0;
             if (typeof data.inviteRewardsTotal !== 'number') updates.inviteRewardsTotal = 0;
+            // BACKFILL kho vật phẩm: mọi người chơi đều có "Thẻ mã hóa" (CCCD).
+            if (!Array.isArray(data.inventory)) updates.inventory = buildDefaultInventory(now);
             // Đồng bộ avatar Google (photoURL) làm avatar — CHỈ khi user chưa đặt avatar
             // tùy chỉnh (dataURL). Avatar tùy chỉnh được giữ nguyên, không bị Google đè.
             const currentAvatar = data.avatar || '';
@@ -146,6 +149,7 @@ router.post('/init', strictLimiter, async (req, res, next) => {
             inviteCount: 0, inviteRewardsTotal: 0,
             inviteHistory: [], claimedMilestones: [],
             usedSystemCodes: [], rewardsHistory: [],
+            inventory: buildDefaultInventory(now),
             coins: 0,
             settings: {}, library: [], highScores: {}, progress: {}
         };
@@ -209,6 +213,24 @@ router.get('/stats', async (req, res, next) => {
 });
 
 /* ------------------------------------------------------------
+   GET /inventory — Kho vật phẩm của người chơi.
+   Mặc định luôn có "Thẻ mã hóa" (CCCD số hóa). Nếu doc thiếu field
+   (user cũ) → tự backfill và trả về.
+------------------------------------------------------------ */
+router.get('/inventory', async (req, res, next) => {
+    try {
+        const userRef = USERS().doc(req.user.uid);
+        const snap = await userRef.get();
+        if (!snap.exists) return res.fail('Tài khoản chưa được khởi tạo. Gọi POST /user/init trước.', ERROR_CODES.USER_NOT_INITIALIZED, 404);
+        let inventory = snap.data().inventory;
+        if (!Array.isArray(inventory)) {
+            inventory = buildDefaultInventory(Timestamp.now());
+            await userRef.update({ inventory });
+        }
+        return res.ok({ inventory, total: inventory.length }, 'Lấy kho vật phẩm thành công.');
+    } catch (err) { return next(err); }
+});
+/* ------------------------------------------------------------
    GET /sync — Kéo toàn bộ dữ liệu đồng bộ về client.
    (Trả về user đã sanitize — đủ cho client merge local.)
 ------------------------------------------------------------ */
@@ -233,6 +255,7 @@ router.get('/sync', async (req, res, next) => {
             inviteUsed: !!data.inviteUsed,
             invitedBy: data.invitedBy || null,
             inviteCount: Number(data.inviteCount) || 0,
+            inventory: Array.isArray(data.inventory) ? data.inventory : buildDefaultInventory(null),
             updatedAt: data.updatedAt || data.lastLoginAt || null
         }, 'Lấy dữ liệu đồng bộ thành công.');
     } catch (err) { return next(err); }

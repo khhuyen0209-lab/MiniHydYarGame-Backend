@@ -17,7 +17,7 @@ const express = require('express');
 const { db, FieldValue, Timestamp } = require('../config/firebase');
 const { verifyToken, optionalAuth, requireAdmin } = require('../middleware/auth');
 const { strictLimiter } = require('../middleware/limiter');
-const { ERROR_CODES, sanitizeUser, getAdminPanelKey, generateUniqueInviteCode, CODE_PREFIX } = require('../utils/helpers');
+const { ERROR_CODES, sanitizeUser, getAdminPanelKey, generateUniqueInviteCode, CODE_PREFIX, buildDefaultInventory } = require('../utils/helpers');
 const router = express.Router();
 /* ---------------- Khóa panel quản trị viên (yếu tố thứ 2) ----------------
    Nếu ADMIN_PANEL_KEY khác rỗng → mọi request /admin/* phải gửi header
@@ -171,6 +171,7 @@ router.post('/reset-account', async (req, res, next) => {
             inviteCount: 0,
             inviteHistory: [],
             inviteRewardsTotal: 0,
+            inventory: buildDefaultInventory(Timestamp.now()),
             lastLoginAt: FieldValue.serverTimestamp()
         });
         await logAction(req, 'reset-account', snap.id, `email=${data.email || ''}`);

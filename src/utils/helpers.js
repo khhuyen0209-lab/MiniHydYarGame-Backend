@@ -39,12 +39,15 @@ function attachResponseHelpers(req, res, next) {
 }
 
 /* ---------------- Mã mời ----------------
-   Tiền tố nhận diện (theo yêu cầu):
-     AC   = mã mời người dùng (user) — thay thế HY cũ.
-     HY   = mã hệ thống (system).
-     PXE / GNTU = mã đặc biệt (special promo — vẫn là system_codes).
-     ADM  = mã mời quản trị viên (admin-created, vẫn trong system_codes).
-   Lưu ý: tương thích ngược — user cũ vẫn có mã HY... và vẫn dùng được.
+   ĐỊNH DẠNG MỚI (theo yêu cầu): tiền tố + dấu gạch ngang + phần ngẫu nhiên.
+     AC-XXXXXX   = mã mời người dùng (user) — MÃ MỜI, nhập 1 lần → khóa.
+     ADM-XXXXXX  = mã mời quản trị viên (admin) — MÃ MỜI, nhập 1 lần → khóa.
+     HY-XXXXXX   = mã hệ thống (system) — MÃ CODE, thưởng cơ bản 250 coin,
+                   không giới hạn số lần nhập (nhưng mỗi mã chỉ dùng 1 lần/user).
+     PXE-/GNTU-  = mã sự kiện đặc biệt — MÃ CODE, thưởng tối thiểu 1000 coin,
+                   cơ chế giống HY.
+   Tương thích ngược: mã cũ không có dấu gạch ngang (vd HY_2306TL, ACXXXXXX)
+   vẫn nhận diện và dùng được bình thường.
 ------------------------------------------------------ */
 const CODE_PREFIX = Object.freeze({
     USER: 'AC',
@@ -53,8 +56,36 @@ const CODE_PREFIX = Object.freeze({
     SYSTEM_GNTU: 'GNTU',
     ADMIN: 'ADM'
 });
+// Dấu phân cách giữa tiền tố và phần ngẫu nhiên.
+const CODE_SEPARATOR = '-';
+// MÃ CODE (quà tặng / sự kiện): nhập nhiều lần được, mỗi mã chỉ dùng 1 lần/user.
+const GIFT_PREFIXES = [CODE_PREFIX.SYSTEM_HY, CODE_PREFIX.SYSTEM_PXE, CODE_PREFIX.SYSTEM_GNTU];
+// MÃ MỜI (người dùng / quản trị): nhập 1 lần → khóa không nhập lại được.
+const INVITE_PREFIXES = [CODE_PREFIX.ADMIN, CODE_PREFIX.USER];
 // Các prefix hợp lệ cho system_codes (dùng khi admin tạo mã).
 const SYSTEM_PREFIXES = [CODE_PREFIX.SYSTEM_HY, CODE_PREFIX.SYSTEM_PXE, CODE_PREFIX.SYSTEM_GNTU, CODE_PREFIX.ADMIN];
+/* ---------------- Thưởng tối thiểu theo loại mã ----------------
+   - HY: thưởng cơ bản 250 coin.
+   - PXE / GNTU (sự kiện đặc biệt): tối thiểu 1000 coin.
+   - ADM (admin): tối thiểu 900 coin. Mỗi admin có mức thưởng khác nhau;
+     "thanh linh" được 950 coin — cao nhất trong các admin.
+   - AC (người dùng thường): người được mời nhận tối thiểu 100 coin.
+   Lưu ý: mức tối thiểu CHỈ áp dụng khi tạo mã qua API admin. Nếu admin
+   chỉnh sửa trực tiếp trên Firestore, server chấp nhận nguyên giá trị
+   rewardCoins trong doc (không ép lại ngưỡng) — xem invite.js.
+------------------------------------------------------ */
+const GIFT_CODE_DEFAULT_REWARD = Object.freeze({ HY: 250, PXE: 1000, GNTU: 1000 });
+const GIFT_CODE_MIN_REWARD = Object.freeze({ HY: 250, PXE: 1000, GNTU: 1000 });
+const ADMIN_CODE_MIN_REWARD = 900;
+// Mức thưởng đặc biệt theo tên admin (key = tên thường / email lowercase, không dấu cách).
+const ADMIN_CODE_NAMED_REWARD = Object.freeze({
+    'thanhlinh': 950,
+    'thanhlinh182005': 950,
+    'thanhlinh182005@gmail.com': 950
+});
+const USER_WELCOME_MIN_REWARD = 100;
+// Chuỗi ký tự hợp lệ trong mã (cho phép cả dấu gạch ngang & gạch dưới cũ).
+const CODE_REGEX = /^[A-Z0-9][A-Z0-9_-]{2,23}$/;
 /* ---------------- Admin (chống giả mạo) ----------------
    Danh sách email được quyền admin. Lấy từ env ADMIN_EMAILS
    (phân tách bằng dấu phẩy). Mặc định gồm tài khoản test của chủ dự án.
@@ -97,23 +128,29 @@ function generateRandomPart(length = CODE_RANDOM_LENGTH) {
 }
 
 function generateInviteCode(prefix = CODE_PREFIX.USER, length = CODE_RANDOM_LENGTH) {
-    return prefix + generateRandomPart(length);
+    return prefix + CODE_SEPARATOR + generateRandomPart(length);
 }
 
 /**
- * Phân loại mã mời dựa trên prefix.
- * @returns {{type:'user'|'system', prefix:string, subtype?:string}|null}
+ * Phân loại mã dựa trên tiền tố (có hoặc không có dấu gạch ngang).
+ * @returns {{category:'gift'|'invite', type:'gift_hy'|'gift_pxe'|'gift_gntu'|'admin'|'user', prefix:string, subtype:string}|null}
+ *  - category=gift   → MÃ CODE (HY/PXE/GNTU): không khóa, mỗi mã 1 lần/user.
+ *  - category=invite → MÃ MỜI (ADM/AC): nhập 1 lần → khóa.
  */
 function classifyCode(code) {
-    const c = String(code || '').trim().toUpperCase();
-    if (new RegExp(`^${CODE_PREFIX.USER}[A-Z0-9]{${CODE_RANDOM_LENGTH},}$`).test(c)) {
-        return { type: 'user', prefix: CODE_PREFIX.USER };
-    }
-    if (c.startsWith(CODE_PREFIX.SYSTEM_HY)) return { type: 'system', prefix: CODE_PREFIX.SYSTEM_HY, subtype: 'hệ thống' };
-    if (c.startsWith(CODE_PREFIX.SYSTEM_PXE)) return { type: 'system', prefix: CODE_PREFIX.SYSTEM_PXE, subtype: 'đặc biệt' };
-    if (c.startsWith(CODE_PREFIX.SYSTEM_GNTU)) return { type: 'system', prefix: CODE_PREFIX.SYSTEM_GNTU, subtype: 'đặc biệt' };
-    if (c.startsWith(CODE_PREFIX.ADMIN)) return { type: 'system', prefix: CODE_PREFIX.ADMIN, subtype: 'quản trị viên' };
+    const bare = String(code || '').trim().toUpperCase();
+    if (bare.startsWith(CODE_PREFIX.SYSTEM_GNTU)) return { category: 'gift', type: 'gift_gntu', prefix: CODE_PREFIX.SYSTEM_GNTU, subtype: 'sự kiện đặc biệt' };
+    if (bare.startsWith(CODE_PREFIX.SYSTEM_PXE)) return { category: 'gift', type: 'gift_pxe', prefix: CODE_PREFIX.SYSTEM_PXE, subtype: 'sự kiện đặc biệt' };
+    if (bare.startsWith(CODE_PREFIX.SYSTEM_HY)) return { category: 'gift', type: 'gift_hy', prefix: CODE_PREFIX.SYSTEM_HY, subtype: 'hệ thống' };
+    if (bare.startsWith(CODE_PREFIX.ADMIN)) return { category: 'invite', type: 'admin', prefix: CODE_PREFIX.ADMIN, subtype: 'quản trị viên' };
+    if (bare.startsWith(CODE_PREFIX.USER)) return { category: 'invite', type: 'user', prefix: CODE_PREFIX.USER, subtype: 'người chơi' };
     return null;
+}
+/** Mức thưởng đề xuất cho mã admin theo tên (vd "thanh linh" → 950, cao nhất). */
+function adminCodeRewardFor(nameOrEmail) {
+    const key = String(nameOrEmail || '').toLowerCase().replace(/[^a-z0-9@.]/g, '');
+    if (ADMIN_CODE_NAMED_REWARD[key]) return ADMIN_CODE_NAMED_REWARD[key];
+    return ADMIN_CODE_MIN_REWARD;
 }
 
 /**
@@ -139,10 +176,27 @@ async function generateUniqueInviteCode(prefix = CODE_PREFIX.USER, length = CODE
    - Nếu A cũng từng nhập mã của C → C (cấp 2, ông/bà mời): SECOND_LEVEL coin
 ------------------------------------------------------ */
 const REFERRAL_REWARDS = Object.freeze({
-    WELCOME: Number(process.env.INVITE_WELCOME_COINS) || 50,
+    WELCOME: Number(process.env.INVITE_WELCOME_COINS) || USER_WELCOME_MIN_REWARD,
     DIRECT: Number(process.env.INVITE_REWARD_COINS) || 100,
     SECOND_LEVEL: Number(process.env.REFERRAL_SECOND_LEVEL_COINS) || 20
 });
+/* ---------------- Kho vật phẩm (Inventory) ----------------
+   Mặc định mọi người chơi đều có "Thẻ người chơi" — giấy tờ tùy thân số hóa
+   (CCCD) của người chơi trong hệ thống. Không thể bỏ / tiêu hủy.
+------------------------------------------------------ */
+const DEFAULT_INVENTORY_ITEM_ID = 'encrypted-id-card';
+function buildDefaultInventory(now) {
+    return [{
+        id: DEFAULT_INVENTORY_ITEM_ID,
+        name: 'Thẻ người chơi',
+        kind: 'id-card',
+        rarity: 'legendary',
+        permanent: true,
+        desc: 'CCCD số hóa của người chơi. Định danh duy nhất trong hệ thống MiniGame HY.',
+        obtainedAt: now || null,
+        count: 1
+    }];
+}
 
 /* ---------------- Mốc thưởng theo số lượt mời ---------------- */
 const INVITE_MILESTONES = Object.freeze([
@@ -187,6 +241,7 @@ function sanitizeUser(data) {
         highScores: data.highScores || {},
         progress: data.progress || {},
         rewardsHistory: history.slice(-50),
+        inventory: Array.isArray(data.inventory) ? data.inventory : [],
         systemCodesUsedCount: Array.isArray(data.usedSystemCodes) ? data.usedSystemCodes.length : 0
     };
 }
@@ -211,16 +266,28 @@ module.exports = {
     ERROR_CODES,
     attachResponseHelpers,
     CODE_PREFIX,
+    CODE_SEPARATOR,
     SYSTEM_PREFIXES,
+    GIFT_PREFIXES,
+    INVITE_PREFIXES,
+    GIFT_CODE_DEFAULT_REWARD,
+    GIFT_CODE_MIN_REWARD,
+    ADMIN_CODE_MIN_REWARD,
+    ADMIN_CODE_NAMED_REWARD,
+    USER_WELCOME_MIN_REWARD,
+    CODE_REGEX,
     CODE_RANDOM_LENGTH,
     generateInviteCode,
     generateUniqueInviteCode,
     classifyCode,
+    adminCodeRewardFor,
     getAdminEmails,
     isAdminEmail,
     getAdminPanelKey,
     REFERRAL_REWARDS,
     INVITE_MILESTONES,
+    DEFAULT_INVENTORY_ITEM_ID,
+    buildDefaultInventory,
     sanitizeUser,
     computeStats
 };
